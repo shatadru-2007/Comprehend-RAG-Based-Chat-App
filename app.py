@@ -1,6 +1,9 @@
 import streamlit as st
 import os
+import sqlite3
+import json
 import google.generativeai as genai
+from datetime import datetime
 from langchain_community.vectorstores import FAISS
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -8,18 +11,54 @@ from langchain_classic.chains import create_retrieval_chain
 from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 
+DB_NAME = "History.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_NAME, check_same_thread=False)
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp DATETIME,
+            query TEXT,
+            response TEXT,
+            sources TEXT
+        )
+    ''')
+    conn.commit()
+    return conn
+
+def save_log(conn, query, response, sources):
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO logs (timestamp, query, response, sources) VALUES (?, ?, ?, ?)",
+        (datetime.now(), query, response, json.dumps(sources))
+    )
+    conn.commit()
+
 st.set_page_config(page_title="Comprehend", layout="wide")
 st.title("📄 Comprehend: RAG Based Chat App")
+db_conn = init_db()
 
 with st.sidebar:
+    st.title("Settings & Logs")
     api_key = st.text_input("Enter Gemini API Key", type="password")
     if api_key:
         os.environ["GOOGLE_API_KEY"] = api_key
         genai.configure(api_key=api_key)
+
+    st.divider()
     
     if st.button("Clear Chat"):
         st.session_state.messages = []
         st.rerun()
+
+    if st.checkbox("Show Database Logs"):
+        st.subheader("Recent Queries")
+        history = db_conn.cursor().execute("SELECT timestamp, query FROM logs ORDER BY id DESC LIMIT 5").fetchall()
+        for ts, q in history:
+            st.caption(f"{ts}")
+            st.text(q[:50] + "...")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -89,6 +128,8 @@ if prompt := st.chat_input("Ask a question..."):
             
             answer = response["answer"]
             source_contents = [doc.page_content for doc in response["context"]]
+            
+            save_log(db_conn, prompt, answer, source_contents)
             
             st.markdown(answer)
             with st.expander("View Sources"):
